@@ -1,33 +1,21 @@
 package net.jworkflow.kernel.services;
 
-import net.jworkflow.kernel.models.EventSubscription;
 import net.jworkflow.kernel.models.QueueType;
 import net.jworkflow.kernel.models.WorkflowDefinition;
 import net.jworkflow.kernel.models.WorkflowStatus;
-import net.jworkflow.kernel.models.ExecutionPointer;
 import net.jworkflow.kernel.models.Event;
 import net.jworkflow.kernel.models.WorkflowInstance;
-import net.jworkflow.kernel.interfaces.WorkflowRegistry;
-import net.jworkflow.kernel.interfaces.LockService;
-import net.jworkflow.kernel.interfaces.QueueService;
-import net.jworkflow.kernel.interfaces.PersistenceService;
-import net.jworkflow.kernel.interfaces.Workflow;
-import net.jworkflow.kernel.interfaces.WorkflowHost;
+import net.jworkflow.kernel.interfaces.*;
 import com.google.inject.Inject;
 import com.google.inject.Injector;
 import com.google.inject.Singleton;
-import java.util.UUID;
+import java.time.Clock;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.Date;
-import java.util.List;
-import java.util.concurrent.Callable;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
+import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import net.jworkflow.definitionstorage.services.DefinitionLoader;
 
 @Singleton
 public class DefaultWorkflowHost implements WorkflowHost {
@@ -37,30 +25,26 @@ public class DefaultWorkflowHost implements WorkflowHost {
     private final QueueService queueProvider;
     private final LockService lockProvider;
     private final WorkflowRegistry registry;
-    private final List<ScheduledFuture> workerFutures;
-    private final ScheduledExecutorService scheduler;
-    private final Injector injector;
+    private final ExecutionPointerFactory pointerFactory;
+    private final DefinitionLoader definitionLoader;
+    private final Clock clock;
     private final Logger logger;
-    
-    private ScheduledFuture pollFuture;
+    private final Set<BackgroundService> backgroundServices;
     
     @Inject
-    public DefaultWorkflowHost(PersistenceService persistenceProvider, QueueService queueProvider, LockService lockProvider, WorkflowRegistry registry, Injector injector, Logger logger) {
-        
-        Runtime runtime = Runtime.getRuntime();
-        
+    public DefaultWorkflowHost(PersistenceService persistenceProvider, QueueService queueProvider, LockService lockProvider, WorkflowRegistry registry, ExecutionPointerFactory pointerFactory, DefinitionLoader definitionLoader, Clock clock, Set<BackgroundService> backgroundServices, Logger logger) {
         this.persistenceProvider = persistenceProvider;
         this.queueProvider = queueProvider;
         this.lockProvider = lockProvider;
         this.registry = registry;        
-        this.injector = injector;
-        this.logger = logger;
-        this.scheduler = Executors.newScheduledThreadPool(runtime.availableProcessors());
+        this.pointerFactory = pointerFactory;
+        this.clock = clock;
+        this.logger = logger;        
+        this.definitionLoader = definitionLoader;
+        this.backgroundServices = backgroundServices;
         active = false;
-        workerFutures = new ArrayList<>();        
     }
     
-
     @Override
     public String startWorkflow(String workflowId, int version, Object data) throws Exception {
         
@@ -78,19 +62,14 @@ public class DefaultWorkflowHost implements WorkflowHost {
         wf.setData(data);
         wf.setDescription(def.getDescription());
         wf.setNextExecution((long)0);
-        wf.setCreateTimeUtc(Date.from(Instant.now()));
+        wf.setCreateTimeUtc(Date.from(Instant.now(clock)));
         wf.setStatus(WorkflowStatus.RUNNABLE);
         
         if ((def.getDataType() != null) && (data == null)) {
             wf.setData(def.getDataType().newInstance());
         }
 
-        ExecutionPointer ep = new ExecutionPointer();
-        ep.id = UUID.randomUUID().toString();
-        ep.active = true;
-        ep.stepId = 0;
-        
-        wf.getExecutionPointers().add(ep);
+        wf.getExecutionPointers().add(pointerFactory.buildGenesisPointer(def));
         String id = persistenceProvider.createNewWorkflow(wf);
         
         queueProvider.queueForProcessing(QueueType.WORKFLOW, id);
@@ -101,25 +80,20 @@ public class DefaultWorkflowHost implements WorkflowHost {
     @Override
     public void start() {
         active = true;
-        
-        WorkflowThread wfWorker = injector.getInstance(WorkflowThread.class);            
-        workerFutures.add(scheduler.scheduleAtFixedRate(wfWorker, 100, 100, TimeUnit.MILLISECONDS));
-        
-        EventThread evtWorker = injector.getInstance(EventThread.class);            
-        workerFutures.add(scheduler.scheduleAtFixedRate(evtWorker, 100, 100, TimeUnit.MILLISECONDS));
-        
-        PollThread poller = injector.getInstance(PollThread.class);
-        pollFuture = scheduler.scheduleAtFixedRate(poller, 10, 10, TimeUnit.SECONDS);
+        persistenceProvider.provisionStore();
+        lockProvider.start();
+        backgroundServices.forEach((svc) -> {
+            svc.start();
+        });
     }
 
     @Override
     public void stop() {
         active = false;
-        pollFuture.cancel(true);
-        workerFutures.forEach((worker) -> {
-            worker.cancel(false);
+        backgroundServices.forEach((svc) -> {
+            svc.stop();
         });
-        workerFutures.clear();
+        lockProvider.stop();
     }
 
     @Override
@@ -138,7 +112,7 @@ public class DefaultWorkflowHost implements WorkflowHost {
         if (!active)
             throw new Exception("Host is not running");
 
-        logger.log(Level.INFO, String.format("Creating event %s %s", eventName, eventName, eventKey));
+        logger.log(Level.INFO, String.format("Creating event %s %s", eventName, eventKey));
         
         Event evt = new Event();
 
@@ -146,7 +120,7 @@ public class DefaultWorkflowHost implements WorkflowHost {
         if (effectiveDateUtc != null)
             evt.eventTimeUtc = effectiveDateUtc;
         else
-            evt.eventTimeUtc = new Date();
+            evt.eventTimeUtc = Date.from(Instant.now(clock));
 
         evt.eventData = eventData;
         evt.eventKey = eventKey;
@@ -197,6 +171,11 @@ public class DefaultWorkflowHost implements WorkflowHost {
             }
         }
         return false;
+    }
+
+    @Override
+    public void registerWorkflowFromJson(String json) throws Exception {
+        definitionLoader.loadFromJson(json);
     }
 
 }

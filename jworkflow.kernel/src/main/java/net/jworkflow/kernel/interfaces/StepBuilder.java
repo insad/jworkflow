@@ -1,11 +1,19 @@
 package net.jworkflow.kernel.interfaces;
 
+import net.jworkflow.primitives.Sequence;
+import net.jworkflow.primitives.While;
+import net.jworkflow.primitives.WaitFor;
+import net.jworkflow.primitives.If;
+import net.jworkflow.primitives.Schedule;
+import net.jworkflow.primitives.Delay;
+import net.jworkflow.primitives.Foreach;
+import net.jworkflow.primitives.ConsumerStep;
 import java.time.Duration;
 import java.util.Date;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import net.jworkflow.kernel.models.ErrorBehavior;
 import net.jworkflow.kernel.models.*;
-import net.jworkflow.kernel.steps.*;
 
 public interface StepBuilder<TData, TStep extends StepBody> {
 
@@ -92,6 +100,8 @@ public interface StepBuilder<TData, TStep extends StepBody> {
      * @return 
      */
     StepBuilder<TData, WorkflowStepInline.InlineBody> then(StepExecutionConsumer body);
+    
+    StepBuilder<TData, ConsumerStep> thenAction(Consumer<StepExecutionContext> body);
 
     /**
      * Put the workflow to sleep until to specified event is published
@@ -100,7 +110,7 @@ public interface StepBuilder<TData, TStep extends StepBody> {
      * @param effectiveDateUtc
      * @return 
      */
-    StepBuilder<TData, SubscriptionStepBody> waitFor(String eventName, Function<TData, String> eventKey, Function<TData, Date> effectiveDateUtc);
+    StepBuilder<TData, WaitFor> waitFor(String eventName, Function<TData, String> eventKey, Function<TData, Date> effectiveDateUtc);
 
     /**
      * Put the workflow to sleep until to specified event is published
@@ -108,7 +118,7 @@ public interface StepBuilder<TData, TStep extends StepBody> {
      * @param eventKey
      * @return 
      */
-    StepBuilder<TData, SubscriptionStepBody> waitFor(String eventName, Function<TData, String> eventKey);
+    StepBuilder<TData, WaitFor> waitFor(String eventName, Function<TData, String> eventKey);
 
     //StepBuilder<TData, TStep> when(Object value, WorkflowBuilderConsumer<TData> branch);
     
@@ -139,4 +149,32 @@ public interface StepBuilder<TData, TStep extends StepBody> {
      */
     ControlStepBuilder<TData, If> If(Function<TData, Boolean> condition);
     
+    /**
+     * Put the this workflow branch to sleep for a specified time
+     * @param duration
+     * @return 
+     */
+    StepBuilder<TData, Delay> delay(Function<TData, Duration> duration);
+    
+    /**
+     * Schedules the future execution of a branch of steps
+     * @param duration
+     * @return 
+     */
+    ControlStepBuilder<TData, Schedule> schedule(Function<TData, Duration> duration);
+        
+    ParallelStepBuilder<TData, Sequence> parallel();
+    
+    StepBuilder<TData, Sequence> saga(WorkflowBuilderConsumer<TData> consumer);
+    
+    <TNewStep extends StepBody> StepBuilder<TData, TStep> compensateWith(Class<TNewStep> stepClass);
+    
+    <TNewStep extends StepBody> StepBuilder<TData, TStep> compensateWith(Class<TNewStep> stepClass, StepBuilderConsumer stepSetup);
+    
+    StepBuilder<TData, TStep> compensateWith(StepExecutionConsumer body);
+    
+    StepBuilder<TData, TStep> compensateWithAction(Consumer<StepExecutionContext> body);
+    
+    StepBuilder<TData, TStep> compensateWithSequence(WorkflowBuilderConsumer<TData> consumer);    
+
 }

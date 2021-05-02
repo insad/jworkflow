@@ -5,3 +5,8 @@
 /sample04/target/
 /sample05/target/
 /sample06/target/
+/sample07/target/
+/sample08/target/
+/jworkflow.providers.redis/target/
+/jworkflow.providers.aws/target/
+/jworkflow.providers.rabbitmq/target/
